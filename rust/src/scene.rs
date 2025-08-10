@@ -63,14 +63,15 @@ impl Scene {
         
         let res = match scene_nr {
             0 => 60,   // Tank - reduced resolution
-            1 => 120,  // Wind tunnel - balanced resolution
-            3 => 180,  // High-res tunnel - moderate high resolution
+            1 => 200,  // Wind tunnel - high resolution for good obstacle representation
+            3 => 250,  // High-res tunnel - very high resolution
             4 => 150,  // Radiator testing - optimized resolution for speed
-            _ => 100,  // Default resolution
+            _ => 120,  // Default resolution
         };
         
-        // Reduce iterations for better performance
+        // Reduce iterations for better performance, but ensure convergence for obstacle scenarios
         self.num_iters = match scene_nr {
+            1 => 40,   // Wind tunnel with obstacles - need more iterations for accuracy
             4 => 20,   // Radiator - fewer iterations for speed
             _ => 30,   // Other scenes
         };
@@ -178,24 +179,9 @@ impl Scene {
             }
         }
         
-        // Set obstacle in the middle of the domain for vortex shedding
-        let obs_x = fluid.num_x as f64 * fluid.h * 0.4;
-        let obs_y = fluid.num_y as f64 * fluid.h * 0.5;
-        
-        // Add obstacle using new system
+        // Clear any existing obstacles - let main.rs control obstacle placement
         self.obstacle_manager.clear();
-        let cylinder = Obstacle::new_circle(obs_x, obs_y, self.obstacle_radius);
-        self.obstacle_manager.add_obstacle(cylinder);
-        
-        // Apply obstacles to fluid
-        self.obstacle_manager.apply_to_fluid(
-            &mut fluid.s, &mut fluid.u, &mut fluid.v, &mut fluid.m,
-            fluid.num_x, fluid.num_y, fluid.h
-        );
-        
-        self.obstacle_x = obs_x;
-        self.obstacle_y = obs_y;
-        self.show_obstacle = true;
+        self.show_obstacle = false;
     }
     
     fn setup_paint(&mut self, _fluid: &mut Fluid) {

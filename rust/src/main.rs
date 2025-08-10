@@ -99,17 +99,38 @@ fn run_single_simulation(scene_nr: usize, num_steps: usize, output_dir: &str, an
 
     let visualizer = Visualizer::new(800, 600);
     
-    // Demonstrate the new obstacle system
+    // Demonstrate the new obstacle system with better sizing
     if scene_nr == 1 {
         println!("🔶 Adding demonstration obstacles to Scene 1:");
-        // Add a circle (cylinder)
-        let circle = Obstacle::new_circle(1.0, 0.5, 0.1);
+        
+        // Get domain info first
+        let (domain_width, domain_height, grid_spacing) = if let Some(ref fluid) = scene.fluid {
+            (fluid.num_x as f64 * fluid.h, fluid.num_y as f64 * fluid.h, fluid.h)
+        } else {
+            (2.0, 1.0, 0.01) // fallback values
+        };
+        
+        println!("   Domain: {:.2}m × {:.2}m, Grid spacing: {:.4}m", domain_width, domain_height, grid_spacing);
+        
+        // Circle obstacle - positioned upstream, larger size for better grid resolution
+        let circle_radius = grid_spacing * 12.0; // Radius spans 12 grid cells (larger for better visibility)
+        let circle_x = domain_width * 0.3; // 30% downstream
+        let circle_y = domain_height * 0.4;  // Slightly below center
+        let circle = Obstacle::new_circle(circle_x, circle_y, circle_radius);
         scene.add_obstacle(circle);
-        println!("   Added circle obstacle at (1.0, 0.5)");
-        // Add an airfoil
-        let airfoil = Obstacle::new_airfoil(1.5, 0.7, 0.3, 0.12, 0.2);
+        println!("   Added circle obstacle: radius={:.3}m ({:.1} cells) at ({:.2}, {:.2})", 
+                 circle_radius, circle_radius/grid_spacing, circle_x, circle_y);
+        
+        // Airfoil obstacle - positioned downstream for wake interaction
+        let airfoil_chord = grid_spacing * 40.0; // Chord spans 40 grid cells (increased for better visibility)
+        let airfoil_thickness = 0.15; // 15% thickness-to-chord ratio (typical airfoil)
+        let airfoil_x = domain_width * 0.7; // 70% downstream (moved further for better separation)
+        let airfoil_y = domain_height * 0.6;  // Slightly above center
+        let airfoil_angle = 10.0_f64.to_radians(); // 10 degree angle of attack
+        let airfoil = Obstacle::new_airfoil(airfoil_x, airfoil_y, airfoil_chord, airfoil_thickness, airfoil_angle);
         scene.add_obstacle(airfoil);
-        println!("   Added airfoil obstacle at (1.5, 0.7)");
+        println!("   Added airfoil obstacle: chord={:.3}m ({:.1} cells), thickness={:.1}%, angle={:.1}° at ({:.2}, {:.2})", 
+                 airfoil_chord, airfoil_chord/grid_spacing, airfoil_thickness*100.0, airfoil_angle.to_degrees(), airfoil_x, airfoil_y);
     }
 
     println!("✅ Simulation initialized");
@@ -190,13 +211,15 @@ fn run_single_simulation(scene_nr: usize, num_steps: usize, output_dir: &str, an
         
         frame_count += 1;
 
-        // Save visualizations much less frequently unless animating
+        // Enhanced visualization frequency for better smoke interaction analysis
         let save_interval = if performance_mode {
             num_steps // Only save at the end in performance mode
         } else if animate { 
-            50 
+            20 // More frequent saves for animation (every 20 steps)
+        } else if step < 100 {
+            10 // Save every 10 steps for first 100 to see initial smoke interaction
         } else { 
-            num_steps / 5 // Only 5 saves for non-animated runs
+            50 // Less frequent after initial development
         };
         
         if step % save_interval == 0 || step == num_steps - 1 {

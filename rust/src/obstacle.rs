@@ -197,7 +197,7 @@ impl ObstacleManager {
         }
     }
     
-    /// Apply a single obstacle to the fluid arrays
+    /// Apply a single obstacle to the fluid arrays with improved boundary conditions
     fn apply_single_obstacle(&self,
         obstacle: &Obstacle,
         fluid_s: &mut Array2<f64>, 
@@ -208,6 +208,7 @@ impl ObstacleManager {
         num_y: usize, 
         h: f64
     ) {
+        // First pass: mark solid cells
         for i in 1..num_x - 2 {
             for j in 1..num_y - 2 {
                 let px = (i as f64 + 0.5) * h;
@@ -225,11 +226,34 @@ impl ObstacleManager {
                         // Solid obstacle
                         fluid_s[[i, j]] = 0.0;
                         fluid_m[[i, j]] = 0.0;
-                        fluid_u[[i, j]] = 0.0;
-                        fluid_u[[i + 1, j]] = 0.0;
-                        fluid_v[[i, j]] = 0.0;
-                        fluid_v[[i, j + 1]] = 0.0;
                     }
+                }
+            }
+        }
+        
+        // Second pass: enforce no-slip boundary conditions on velocity
+        for i in 1..num_x - 1 {
+            for j in 1..num_y - 1 {
+                // Check u-velocity points (face-centered)
+                let u_px = (i as f64) * h;
+                let u_py = (j as f64 + 0.5) * h;
+                
+                // Set u-velocity to zero if either adjacent cell is solid
+                let left_solid = i > 0 && fluid_s[[i - 1, j]] == 0.0;
+                let right_solid = i < num_x - 1 && fluid_s[[i, j]] == 0.0;
+                if left_solid || right_solid || obstacle.contains_point(u_px, u_py) {
+                    fluid_u[[i, j]] = 0.0;
+                }
+                
+                // Check v-velocity points (face-centered)
+                let v_px = (i as f64 + 0.5) * h;
+                let v_py = (j as f64) * h;
+                
+                // Set v-velocity to zero if either adjacent cell is solid
+                let bottom_solid = j > 0 && fluid_s[[i, j - 1]] == 0.0;
+                let top_solid = j < num_y - 1 && fluid_s[[i, j]] == 0.0;
+                if bottom_solid || top_solid || obstacle.contains_point(v_px, v_py) {
+                    fluid_v[[i, j]] = 0.0;
                 }
             }
         }
