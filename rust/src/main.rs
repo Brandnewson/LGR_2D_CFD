@@ -3,6 +3,7 @@ mod scene;
 mod visualizer;
 mod radiator;
 mod animator;
+mod obstacle;
 
 use crate::scene::Scene;
 use crate::visualizer::Visualizer;
@@ -52,6 +53,12 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 .help("Generate animated visualization during simulation")
                 .action(clap::ArgAction::SetTrue)
         )
+        .arg(
+            Arg::new("performance")
+                .long("performance")
+                .help("Enable performance mode (minimal visualization, faster execution)")
+                .action(clap::ArgAction::SetTrue)
+        )
         .get_matches();
 
     let scene_nr: usize = matches.get_one::<String>("scene").unwrap().parse()?;
@@ -59,6 +66,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let output_dir = matches.get_one::<String>("output").unwrap();
     let radiator_sweep = matches.get_flag("radiator-sweep");
     let animate = matches.get_flag("animate");
+    let performance_mode = matches.get_flag("performance");
 
     // Create output directory
     std::fs::create_dir_all(output_dir)?;
@@ -68,17 +76,21 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     println!("Steps: {}", num_steps);
     println!("Output: {}", output_dir);
     println!("Animation: {}", if animate { "Yes" } else { "No" });
+    println!("Performance Mode: {}", if performance_mode { "Yes (minimal viz)" } else { "No" });
 
     if radiator_sweep {
         run_radiator_angle_sweep(output_dir, num_steps)?;
     } else {
-        run_single_simulation(scene_nr, num_steps, output_dir, animate)?;
+        run_single_simulation(scene_nr, num_steps, output_dir, animate, performance_mode)?;
     }
 
     Ok(())
 }
 
-fn run_single_simulation(scene_nr: usize, num_steps: usize, output_dir: &str, animate: bool) -> Result<(), Box<dyn std::error::Error>> {
+fn run_single_simulation(scene_nr: usize, num_steps: usize, output_dir: &str, animate: bool, performance_mode: bool) -> Result<(), Box<dyn std::error::Error>> {
+    // Import obstacle types for demonstration
+    use crate::obstacle::Obstacle;
+    
     // Initialize simulation
     let sim_width = 1600.0;
     let sim_height = 900.0;
@@ -86,6 +98,19 @@ fn run_single_simulation(scene_nr: usize, num_steps: usize, output_dir: &str, an
     scene.setup_scene(scene_nr, sim_width, sim_height);
 
     let visualizer = Visualizer::new(800, 600);
+    
+    // Demonstrate the new obstacle system
+    if scene_nr == 1 {
+        println!("🔶 Adding demonstration obstacles to Scene 1:");
+        // Add a circle (cylinder)
+        let circle = Obstacle::new_circle(1.0, 0.5, 0.1);
+        scene.add_obstacle(circle);
+        println!("   Added circle obstacle at (1.0, 0.5)");
+        // Add an airfoil
+        let airfoil = Obstacle::new_airfoil(1.5, 0.7, 0.3, 0.12, 0.2);
+        scene.add_obstacle(airfoil);
+        println!("   Added airfoil obstacle at (1.5, 0.7)");
+    }
 
     println!("✅ Simulation initialized");
     
@@ -144,6 +169,7 @@ fn run_single_simulation(scene_nr: usize, num_steps: usize, output_dir: &str, an
     // Run simulation
     let start_time = Instant::now();
     let mut frame_count = 0;
+    let mut step_times = Vec::new(); // Track individual step performance
     
     // Initialize animator if animation is requested
     let mut animator = if animate {
@@ -157,11 +183,23 @@ fn run_single_simulation(scene_nr: usize, num_steps: usize, output_dir: &str, an
     }
 
     for step in 0..num_steps {
+        let step_start = Instant::now();
         scene.simulate();
+        let step_duration = step_start.elapsed();
+        step_times.push(step_duration.as_secs_f64());
+        
         frame_count += 1;
 
-        // Save visualizations every 100 steps
-        if step % 100 == 0 {
+        // Save visualizations much less frequently unless animating
+        let save_interval = if performance_mode {
+            num_steps // Only save at the end in performance mode
+        } else if animate { 
+            50 
+        } else { 
+            num_steps / 5 // Only 5 saves for non-animated runs
+        };
+        
+        if step % save_interval == 0 || step == num_steps - 1 {
             if let Some(ref fluid) = scene.fluid {
                 let step_str = format!("{:04}", step);
                 
@@ -184,7 +222,7 @@ fn run_single_simulation(scene_nr: usize, num_steps: usize, output_dir: &str, an
                 }
                 
                 // Debug: Check fluid state and physics validation
-                if step % 200 == 0 {
+                if (step % (num_steps / 3) == 0 || step == num_steps - 1) && !performance_mode {
                     let max_u = fluid.u.iter().fold(0.0f64, |acc, &x| acc.max(x.abs()));
                     let max_v = fluid.v.iter().fold(0.0f64, |acc, &x| acc.max(x.abs()));
                     let max_p = fluid.p.iter().fold(0.0f64, |acc, &x| acc.max(x.abs()));
@@ -211,52 +249,73 @@ fn run_single_simulation(scene_nr: usize, num_steps: usize, output_dir: &str, an
                     println!("  Reynolds Number: {:.0} (Re > 2300 = turbulent)", reynolds);
                 }
                 
-                // Always save smoke field for visualization
-                visualizer.save_smoke_field(
-                    fluid,
-                    format!("{}/smoke_{}.png", output_dir, step_str),
-                )?;
-                
-                // Save pressure field for radiator analysis
-                if scene_nr == 4 {
-                    if let Some(ref radiator) = radiator_analyzer.radiators.first() {
-                        visualizer.save_pressure_field_with_radiator(
+                // Always save smoke field for visualization (only for key frames)
+                if !performance_mode {
+                    if scene.obstacle_manager.get_obstacles().is_empty() {
+                        visualizer.save_smoke_field(
                             fluid,
-                            Some(radiator),
-                            format!("{}/pressure_{}.png", output_dir, step_str),
-                        )?;
-                        
-                        visualizer.save_streamlines_with_radiator(
-                            fluid,
-                            Some(radiator),
-                            format!("{}/streamlines_{}.png", output_dir, step_str),
-                            20,
-                            1000,
+                            format!("{}/smoke_{}.png", output_dir, step_str),
                         )?;
                     } else {
-                        visualizer.save_pressure_field(
+                        // Use the new obstacle visualization when obstacles are present
+                        use crate::fluid::FieldType;
+                        visualizer.save_field_with_obstacles(
                             fluid,
-                            format!("{}/pressure_{}.png", output_dir, step_str),
-                        )?;
-                        
-                        visualizer.save_streamlines(
-                            fluid,
-                            format!("{}/streamlines_{}.png", output_dir, step_str),
-                            20,
-                            1000,
+                            &scene.obstacle_manager,
+                            format!("{}/smoke_{}.png", output_dir, step_str),
+                            FieldType::Smoke,
                         )?;
                     }
-                    
-                    visualizer.save_velocity_field(
-                        fluid,
-                        format!("{}/velocity_{}.png", output_dir, step_str),
-                    )?;
+                }
+                
+                // Save additional fields only for final step or if specifically requested
+                if (step == num_steps - 1 || animate) && !performance_mode {
+                    // Save pressure field for radiator analysis
+                    if scene_nr == 4 {
+                        if let Some(ref radiator) = radiator_analyzer.radiators.first() {
+                            visualizer.save_pressure_field_with_radiator(
+                                fluid,
+                                Some(radiator),
+                                format!("{}/pressure_{}.png", output_dir, step_str),
+                            )?;
+                            
+                            visualizer.save_streamlines_with_radiator(
+                                fluid,
+                                Some(radiator),
+                                format!("{}/streamlines_{}.png", output_dir, step_str),
+                                20,
+                                1000,
+                            )?;
+                        } else {
+                            visualizer.save_pressure_field(
+                                fluid,
+                                format!("{}/pressure_{}.png", output_dir, step_str),
+                            )?;
+                            
+                            visualizer.save_streamlines(
+                                fluid,
+                                format!("{}/streamlines_{}.png", output_dir, step_str),
+                                20,
+                                1000,
+                            )?;
+                        }
+                        
+                        visualizer.save_velocity_field(
+                            fluid,
+                            format!("{}/velocity_{}.png", output_dir, step_str),
+                        )?;
+                    }
                 }
             }
             
             let elapsed = start_time.elapsed().as_secs_f64();
             let fps = frame_count as f64 / elapsed;
-            println!("Step {}: {:.1} FPS", step, fps);
+            
+            // Performance reporting
+            if step % (num_steps / 10).max(1) == 0 {
+                let avg_step_time = step_times.iter().rev().take(10).sum::<f64>() / (10_f64).min(step_times.len() as f64);
+                println!("Step {}: {:.1} FPS, Avg Step Time: {:.3}ms", step, fps, avg_step_time * 1000.0);
+            }
         }
     }
 
@@ -281,6 +340,8 @@ fn run_single_simulation(scene_nr: usize, num_steps: usize, output_dir: &str, an
 
     let total_time = start_time.elapsed();
     let final_fps = frame_count as f64 / total_time.as_secs_f64();
+    let avg_step_time = step_times.iter().sum::<f64>() / step_times.len() as f64;
+    let sim_only_time: f64 = step_times.iter().sum();
     
     // Generate GIF animation if frames were captured
     if let Some(ref animator) = animator {
@@ -290,7 +351,12 @@ fn run_single_simulation(scene_nr: usize, num_steps: usize, output_dir: &str, an
     
     println!("🎉 Simulation completed!");
     println!("Total time: {:.2} seconds", total_time.as_secs_f64());
+    println!("Simulation time: {:.2} seconds ({:.1}% of total)", sim_only_time, sim_only_time / total_time.as_secs_f64() * 100.0);
     println!("Average FPS: {:.1}", final_fps);
+    println!("Average step time: {:.3}ms", avg_step_time * 1000.0);
+    if let Some(ref fluid) = scene.fluid {
+        println!("Grid size: {}×{} = {} cells", fluid.num_x, fluid.num_y, fluid.num_x * fluid.num_y);
+    }
     println!("Output saved to: {}", output_dir);
 
     Ok(())

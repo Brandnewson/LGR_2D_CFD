@@ -1,4 +1,5 @@
 use crate::fluid::Fluid;
+use crate::obstacle::{ObstacleManager, Obstacle};
 
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub enum SceneType {
@@ -20,13 +21,10 @@ pub struct Scene {
     pub paused: bool,
     pub scene_nr: usize,
     pub show_obstacle: bool,
-    pub show_streamlines: bool,
     pub scene_type: SceneType,
-    pub show_velocities: bool,
-    pub show_pressure: bool,
-    pub show_smoke: bool,
     pub inflow_velocity: f64,  // Add inflow velocity tracking
     pub fluid: Option<Fluid>,
+    pub obstacle_manager: ObstacleManager, // New obstacle system
 }
 
 impl Default for Scene {
@@ -42,13 +40,10 @@ impl Default for Scene {
             paused: false,
             scene_nr: 0,
             show_obstacle: false,
-            show_streamlines: false,
             scene_type: SceneType::Default,
-            show_velocities: false,
-            show_pressure: false,
-            show_smoke: true,
             inflow_velocity: 5.0,  // Default inflow velocity
             fluid: None,
+            obstacle_manager: ObstacleManager::new(),
         }
     }
 }
@@ -67,16 +62,22 @@ impl Scene {
         self.num_iters = 40;
         
         let res = match scene_nr {
-            0 => 80,   // Tank - higher resolution
-            1 => 200,  // Wind tunnel - much higher resolution  
-            3 => 300,  // High-res tunnel - very high resolution
-            4 => 250,  // Radiator testing - high resolution for accuracy
-            _ => 150,  // Default resolution
+            0 => 60,   // Tank - reduced resolution
+            1 => 120,  // Wind tunnel - balanced resolution
+            3 => 180,  // High-res tunnel - moderate high resolution
+            4 => 150,  // Radiator testing - optimized resolution for speed
+            _ => 100,  // Default resolution
         };
         
-        // Make domain much larger for radiator testing
-        let domain_height = if scene_nr == 4 { 2.0 } else { 1.0 }; // Double height for radiator
-        let domain_width = if scene_nr == 4 { 4.0 } else { domain_height / sim_height * sim_width }; // Much wider for radiator
+        // Reduce iterations for better performance
+        self.num_iters = match scene_nr {
+            4 => 20,   // Radiator - fewer iterations for speed
+            _ => 30,   // Other scenes
+        };
+        
+        // Optimize domain size for radiator testing
+        let domain_height = if scene_nr == 4 { 1.5 } else { 1.0 }; // Smaller height for radiator
+        let domain_width = if scene_nr == 4 { 3.0 } else { domain_height / sim_height * sim_width }; // Smaller width for radiator
         
         let h = domain_height / (res as f64);
         
@@ -180,7 +181,18 @@ impl Scene {
         // Set obstacle in the middle of the domain for vortex shedding
         let obs_x = fluid.num_x as f64 * fluid.h * 0.4;
         let obs_y = fluid.num_y as f64 * fluid.h * 0.5;
-        fluid.set_obstacle(obs_x, obs_y, self.obstacle_radius);
+        
+        // Add obstacle using new system
+        self.obstacle_manager.clear();
+        let cylinder = Obstacle::new_circle(obs_x, obs_y, self.obstacle_radius);
+        self.obstacle_manager.add_obstacle(cylinder);
+        
+        // Apply obstacles to fluid
+        self.obstacle_manager.apply_to_fluid(
+            &mut fluid.s, &mut fluid.u, &mut fluid.v, &mut fluid.m,
+            fluid.num_x, fluid.num_y, fluid.h
+        );
+        
         self.obstacle_x = obs_x;
         self.obstacle_y = obs_y;
         self.show_obstacle = true;
@@ -249,17 +261,30 @@ impl Scene {
         self.show_obstacle = false;
     }
     
-    /// Add obstacle at specified position
-    pub fn set_obstacle(&mut self, x: f64, y: f64, reset: bool) {
+    /// Add obstacle at specified position using the new obstacle system
+    pub fn add_obstacle(&mut self, obstacle: Obstacle) {
+        self.obstacle_manager.add_obstacle(obstacle);
         if let Some(ref mut fluid) = self.fluid {
-            if !reset {
-                // Set velocity based on mouse movement (for future interactive features)
+            self.obstacle_manager.apply_to_fluid(
+                &mut fluid.s, &mut fluid.u, &mut fluid.v, &mut fluid.m,
+                fluid.num_x, fluid.num_y, fluid.h
+            );
+        }
+        self.show_obstacle = true;
+    }
+    
+    /// Clear all obstacles
+    pub fn clear_obstacles(&mut self) {
+        self.obstacle_manager.clear();
+        self.show_obstacle = false;
+        
+        // Reset fluid to open state (this requires reinitializing the scene)
+        if let Some(ref mut fluid) = self.fluid {
+            for i in 0..fluid.num_x {
+                for j in 0..fluid.num_y {
+                    fluid.s[[i, j]] = 1.0; // Reset to fluid
+                }
             }
-            
-            self.obstacle_x = x;
-            self.obstacle_y = y;
-            fluid.set_obstacle(x, y, self.obstacle_radius);
-            self.show_obstacle = true;
         }
     }
     
@@ -276,9 +301,16 @@ impl Scene {
                     self.inflow_velocity
                 );
                 
-                // Apply boundary layer control for wind tunnel scenarios
+                // Apply boundary layer control for wind tunnel scenarios (less frequently)
                 if matches!(self.scene_type, SceneType::WindTunnel) {
-                    fluid.apply_boundary_layer_control(self.inflow_velocity);
+                    // Only apply every 5th step for performance
+                    static mut STEP_COUNTER: usize = 0;
+                    unsafe {
+                        STEP_COUNTER += 1;
+                        if STEP_COUNTER % 5 == 0 {
+                            fluid.apply_boundary_layer_control(self.inflow_velocity);
+                        }
+                    }
                 }
             }
         }

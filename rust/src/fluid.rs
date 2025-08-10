@@ -14,7 +14,6 @@ pub struct Fluid {
     pub density: f64,
     pub num_x: usize,
     pub num_y: usize,
-    pub num_cells: usize,
     pub h: f64,  // Grid spacing
     
     // Velocity fields (staggered grid)
@@ -39,13 +38,11 @@ impl Fluid {
     pub fn new(density: f64, num_x: usize, num_y: usize, h: f64) -> Self {
         let total_x = num_x + 2; // Add ghost cells
         let total_y = num_y + 2;
-        let num_cells = total_x * total_y;
         
         let mut fluid = Self {
             density,
             num_x: total_x,
             num_y: total_y,
-            num_cells,
             h,
             u: Array2::zeros((total_x, total_y)),
             v: Array2::zeros((total_x, total_y)),
@@ -74,11 +71,14 @@ impl Fluid {
         }
     }
     
-    /// Solve for incompressibility using Gauss-Seidel iteration
+    /// Solve for incompressibility using Gauss-Seidel iteration with early convergence
     pub fn solve_incompressibility(&mut self, num_iters: usize, dt: f64, over_relaxation: f64) {
         let cp = self.density * self.h / dt;
+        let convergence_threshold = 1e-6;
         
-        for _iter in 0..num_iters {
+        for iter in 0..num_iters {
+            let mut max_change: f64 = 0.0;
+            
             for i in 1..self.num_x - 1 {
                 for j in 1..self.num_y - 1 {
                     if self.s[[i, j]] == 0.0 {
@@ -101,7 +101,10 @@ impl Fluid {
                     
                     let mut p = -div / s_sum;
                     p *= over_relaxation;
-                    self.p[[i, j]] += cp * p;
+                    
+                    let p_change = cp * p;
+                    self.p[[i, j]] += p_change;
+                    max_change = max_change.max(p_change.abs());
                     
                     // Update velocities
                     self.u[[i, j]]     -= sx0 * p;
@@ -109,6 +112,11 @@ impl Fluid {
                     self.v[[i, j]]     -= sy0 * p;
                     self.v[[i, j + 1]] += sy1 * p;
                 }
+            }
+            
+            // Early convergence check (skip for first few iterations)
+            if iter > 3 && max_change < convergence_threshold {
+                break;
             }
         }
     }
@@ -257,18 +265,6 @@ impl Fluid {
         self.m.assign(&self.new_m);
     }
     
-    /// Main simulation step
-    pub fn simulate(&mut self, dt: f64, gravity: f64, num_iters: usize, over_relaxation: f64) {
-        self.integrate(dt, gravity);
-        
-        self.p.fill(0.0);
-        self.solve_incompressibility(num_iters, dt, over_relaxation);
-        
-        self.extrapolate();
-        self.advect_velocity(dt);
-        self.advect_smoke(dt);
-    }
-    
     /// Enhanced simulation step with boundary condition enforcement
     pub fn simulate_with_boundaries(&mut self, dt: f64, gravity: f64, num_iters: usize, over_relaxation: f64, inflow_velocity: f64) {
         self.integrate(dt, gravity);
@@ -277,12 +273,11 @@ impl Fluid {
         self.solve_incompressibility(num_iters, dt, over_relaxation);
         
         self.extrapolate();
-        self.enforce_boundary_conditions(inflow_velocity);
         
         self.advect_velocity(dt);
         self.advect_smoke(dt);
         
-        // Re-enforce boundary conditions after advection
+        // Enforce boundary conditions only once at the end
         self.enforce_boundary_conditions(inflow_velocity);
     }
     
@@ -360,28 +355,6 @@ impl Fluid {
             for j in core_start..core_end {
                 // Gently nudge core flow back to uniform velocity
                 self.u[[i, j]] = self.u[[i, j]] * 0.95 + inflow_velocity * 0.05;
-            }
-        }
-    }
-    
-    /// Set obstacle in the domain
-    pub fn set_obstacle(&mut self, x: f64, y: f64, radius: f64) {
-        let sqrt2 = (2.0_f64).sqrt();
-        let _cd = sqrt2 * self.h;
-        
-        for i in 1..self.num_x - 2 {
-            for j in 1..self.num_y - 2 {
-                let dx = (i as f64 + 0.5) * self.h - x;
-                let dy = (j as f64 + 0.5) * self.h - y;
-                
-                if dx * dx + dy * dy < radius * radius {
-                    self.s[[i, j]] = 0.0;
-                    self.m[[i, j]] = 0.0;
-                    self.u[[i, j]] = 0.0;
-                    self.u[[i + 1, j]] = 0.0;
-                    self.v[[i, j]] = 0.0;
-                    self.v[[i, j + 1]] = 0.0;
-                }
             }
         }
     }
